@@ -1,0 +1,14 @@
+# torch 와 torchvision 은 반드시 같은 --index-url 로 함께 설치할 것.
+# 하나만 따로 설치하면 "operator torchvision::nms does not exist" 에러가 난다 (ABI 불일치).
+#
+# 아래는 CPU 전용이다. CPU 실측 (8 vCPU): yolo11n 67ms/판 · yolo11m 323ms · rtdetr-l 490ms.
+# yolo11n 은 CPU 로도 초당 15판이라 충분하고, yolo11m 이상은 처리량을 먼저 확인할 것.
+# GPU 를 쓰려면 서버에서 nvidia-smi 로 CUDA 버전을 확인한 뒤
+# cpu -> cu121 / cu124 / cu128 등 서버에 맞는 빌드로 바꿀 것.
+--index-url https://download.pytorch.org/whl/cpu
+torch==2.13.0
+torchvision==0.28.0
+
+--extra-index-url https://pypi.org/simple
+ultralytics==8.4.127   # 이 버전으로 학습·검증함
+opencv-python-headless

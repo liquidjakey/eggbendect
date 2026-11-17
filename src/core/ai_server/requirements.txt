@@ -1,0 +1,12 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+httpx==0.27.2
+pillow==10.4.0
+kafka-python==3.0.11
+
+# 실제 학습된 YOLO11n 가중치(work/mono_result, work/color_result) 사용.
+# torch/torchvision은 CPU 전용 휠로 설치한다 (Dockerfile의
+# --extra-index-url https://download.pytorch.org/whl/cpu 참고) - GPU가 없는
+# 환경(이 devenv 포함)에서 CUDA 휠을 받으면 용량만 몇 GB 커지고 못 쓴다.
+ultralytics==8.4.126
