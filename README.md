@@ -1,95 +1,155 @@
-# 모델 개발환경 가이드
+# 🥚 Egg Vision AI
 
-이 레포는 모델 학습·추론 코드를 개발하고, 이를 **추론 컨테이너로 빌드**하기 위한 저장소입니다.
+**AI quality inspection for egg production lines.**
 
-- 평소 작업은 `master` 브랜치에서 하고, 빌드가 필요할 때만 `model/ci` 브랜치로 푸시합니다.
-- 커밋·푸시는 **개발환경 안에서 본인 계정으로** 합니다. 커밋한 계정 정보로 개발환경을 찾아 빌드하므로, 로컬 PC나 다른 계정으로 푸시하면 빌드가 실패할 수 있습니다.
+Welcome! Egg Vision AI watches egg trays as they move down a production line. It photographs each tray, finds every egg, and flags the ones that look wrong, such as cracked, stained, or misshapen eggs. Quality staff then see the results on a live web dashboard.
 
-## 1. 폴더 구조
+This repo holds the whole system: the trained AI models, the server that runs them, the backend API, and the dashboard.
+
+---
+
+## What it does
+
+1. **Takes a photo** of a tray of eggs on the line.
+2. **Finds each egg** and records where it sits on the tray (row and column).
+3. **Labels each egg** with one of these types:
+
+   | Label | What it means |
+   |---|---|
+   | `NORMAL` | The egg looks fine |
+   | `CRACK` | The shell is cracked. This is a food-safety risk, because bacteria can get in. |
+   | `BLOOD_SPOT` | A blood spot shows through the shell (MONO camera only) |
+   | `DISCOLORATION` | The shell color is uneven or stained |
+   | `FOREIGN_MATERIAL` | Something is stuck to the shell, such as a feather, droppings, or a shell fragment |
+   | `DEFORMED` | The egg has an abnormal shape |
+
+4. **Sends the results** to the backend, which stores them by line and lot.
+5. **Shows everything** on a dashboard so staff can spot problems quickly.
+
+The system supports two kinds of camera lines:
+
+- **MONO**: a black-and-white camera. It also tells you *what kind* of foreign material it found (eggshell, feather, chicken droppings, or speckles).
+- **COLOR**: a color camera, which works well for shell discoloration.
+
+## The dashboard
+
+The web app has four main screens:
+
+| Screen | What you can do there |
+|---|---|
+| **Quality dashboard** (품질 검사 대시보드) | See today's totals, defect rates, defect types, and hourly trends |
+| **Line monitoring** (생산라인 모니터링) | Watch each production line live, tray by tray |
+| **Defect review** (이상 계란 검토) | Open flagged eggs one by one and check the AI's decision |
+| **Shell code lookup** (난각번호 이력 조회) | Look up a lot by the code printed on the eggshell and see its full inspection history |
+
+## How the pieces fit together
 
 ```
-src/
-├── api/                  # 추론 컨테이너의 빌드 설정
-│   ├── Dockerfile        #   베이스 이미지·시스템 패키지 정의
-│   ├── requirements.txt  #   파이썬 패키지 종속성
-│   └── user-values.yaml  #   빌드 메타정보 (3장 참고)
-└── core/                 # 실제 모델 학습·추론 코드
-    ├── predict_module.py #   추론 진입점 (init / predict)
-    ├── test_inference.py #   추론 로컬 테스트 스크립트
-    └── models/           #   모델 파일 보관 위치 (git에는 올라가지 않음)
+ Camera photo
+      │
+      ▼
+ ┌──────────────┐   results   ┌──────────────┐    REST API    ┌──────────────┐
+ │  AI server   │ ──────────▶ │   Backend    │ ─────────────▶ │  Dashboard   │
+ │ (MONO/COLOR) │             │  + Postgres  │                │ (React app)  │
+ └──────────────┘             └──────────────┘                └──────────────┘
+  YOLO / RT-DETR               FastAPI                         Vite + React
 ```
 
-## 2. 단계별 사용법
+- **AI server** (`src/core/ai_server/`): loads a model, runs it on tray photos, and sends the results to the backend. You run one copy for MONO and one for COLOR.
+- **Backend** (`src/core/backend/`): a FastAPI server. It stores inspections in PostgreSQL and serves the data to the dashboard.
+- **Dashboard** (`src/core/frontend/`): a React + TypeScript app built with Vite, Tailwind, and Recharts.
 
-### ① 추론 코드 작성 — `src/core/predict_module.py`
+There is also an optional queue mode that uses Kafka (`/predict-async`) for high-traffic lines. You do not need it to try the app.
 
-- `init()` — 컨테이너 시작 시 1회 실행됩니다. 모델 로드 등 초기화 코드를 작성합니다.
-- `predict(message, ...)` — 요청마다 실행되는 실제 추론 로직입니다. `message`(dict)가 입력이며, 결과를 dict로 반환합니다.
-- 배치 처리 경로(`use_batch_job`)도 템플릿에 포함되어 있으나, 기본 사용은 동기 추론입니다.
+## Try it on your own computer
 
-### ② 패키지 추가 — `src/api/requirements.txt`
+You need **Python 3.11+**, **Node.js 22+**, and **Docker** (for the database).
 
-- 추론에 필요한 파이썬 패키지를 파일 **하단**에 추가합니다.
-- 상단의 시스템 라이브러리(fastapi, uvicorn, redis, psycopg2-binary)는 삭제하지 않습니다.
-- pip 외의 시스템 패키지가 필요하면 `src/api/Dockerfile`의 apt 영역에 추가합니다 (4장 참고).
-
-### ③ 로컬 테스트 — `src/core/test_inference.py`
+### 1. Start the database
 
 ```bash
-cd src/core
-python test_inference.py
+docker run -d --name eggvision-db \
+  -e POSTGRES_USER=eggvision -e POSTGRES_PASSWORD=eggvision -e POSTGRES_DB=eggvision \
+  -p 5432:5432 postgres:16
 ```
 
-- `input_message`를 실제 요청 입력 구조에 맞게 수정한 뒤 실행하여, `init → predict` 흐름이 정상 동작하는지 확인합니다.
-
-### ④ 모델 파일 준비 — `copy_folder_list`
-
-- 모델 가중치 등 대용량 파일은 git에 올리지 않습니다 (`.gitignore`가 `models/`, `checkpoints/`, `*.pt` 등을 제외시킴).
-- 대신 `src/api/user-values.yaml`의 `copy_folder_list`에 해당 폴더 경로를 적어두면, 빌드 파이프라인이 동작하면서 해당 경로를 복제하여 버저닝합니다.
-- 단, 비어있는 폴더는 무시되고 최소 한 개 이상의 파일을 포함한 경우에만 복제합니다.
-
-### ⑤ 빌드 전 점검
-
-- `src/api/user-values.yaml` — `modelDesc`, `aim_id`, `copy_folder_list` 확인 (3장)
-- `src/api/Dockerfile` — 베이스 이미지, 시스템 패키지 확인 (4장)
-
-### ⑥ 빌드 실행
+### 2. Start the backend
 
 ```bash
-git add -A && git commit -m "..."   # 평소처럼 master에 커밋
-git push origin master              # 작업 저장 (빌드는 실행되지 않음)
-git push origin master:model/ci     # ★ 빌드 실행
+cd src/core/backend
+pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8000
 ```
 
-- `model/ci` 브랜치는 처음에는 레포에 없어도 됩니다 — 위 push 명령이 처음 실행될 때 원격에 자동 생성되며, 로컬에 만들거나 체크아웃할 필요가 없습니다.
-- `model/ci` 브랜치로 푸시하면 파이프라인이 **푸시된 커밋 그대로** 컨테이너 이미지 빌드와 모델 버전 등록을 자동으로 수행합니다.
-- 진행 상태는 GitLab 파이프라인 화면에서, 결과는 플랫폼의 모델 목록에서 확인합니다.
-- 푸시할 때마다 새 모델 버전이 만들어집니다 (빌드가 실패해도 버전 번호는 소비됩니다).
+On first run, the backend creates its tables and adds some demo data.
+API docs: http://localhost:8000/docs
 
-## 3. user-values.yaml 항목 설명
+### 3. Start the AI server
 
-| 항목 | 설명 |
-|------|------|
-| `modelDesc` | 이 빌드 버전에 대한 설명. 플랫폼 모델 목록에 표시됩니다. |
-| `aim_id` | 빌드 버전과 연동해 저장할 학습(실험) 버전 ID. 없으면 비워둡니다. |
-| `copy_folder_list` | 빌드 결과에 포함할 폴더 목록. **개발환경 기준 절대 경로**(`/home/jovyan/...`)로 작성합니다. 목록에 있지만 실제로 없는 폴더는 무시됩니다. |
-| `model.*` | 추론 진입점 매핑 — 진입 파일 경로·파일명과 `init`/`predict` 함수명. 시스템이 추론 코드를 찾는 기준이므로 **수정하지 않습니다.** 잘못 수정하면 빌드는 성공해도 배포·추론 시점에 실패합니다. |
+Open a new terminal:
 
-> 파일 위치와 이름(`src/api/user-values.yaml`)은 변경하면 안 됩니다.
+```bash
+cd src/core/ai_server
+pip install -r requirements.txt
+AI_SERVER_SOURCE=MONO \
+AI_MODEL_PATH=../../../work/mono_result/mono_yolo11n.pt \
+uvicorn app.main:app --port 8001
+```
 
-## 4. Dockerfile 작성 시 알아둘 것
+> 💡 If you leave out `AI_MODEL_PATH`, the server still starts. It then answers `NORMAL` for every egg, which is handy for testing the rest of the system.
 
-- 베이스 이미지는 필요 시 변경할 수 있습니다 (예: GPU가 필요하면 CUDA 이미지).
-- `WORKDIR`, `PYTHONPATH` 등 기본 설정은 유지합니다.
-- 이미지는 **`src/api/` 폴더만으로** 빌드됩니다. `COPY`는 `src/api` 안의 파일만 가능하며, `src/core/`의 코드와 모델 파일은 빌드 과정에서 자동으로 포함되므로 `COPY`할 필요가 없습니다.
-- 시스템 패키지는 apt 영역에, 파이썬 패키지는 `requirements.txt`에 추가합니다.
+For a COLOR line, run a second copy on port 8002 with `AI_SERVER_SOURCE=COLOR` and a COLOR model, such as `work/color_result/color_yolo11m.pt`.
 
-## 5. 주의사항 요약
+### 4. Start the dashboard
 
-| 하지 말 것 | 이유 |
-|------------|------|
-| 개발환경 밖(로컬 PC)이나 다른 계정으로 커밋·푸시 | 커밋 계정으로 개발환경을 찾지 못해 빌드 실패 |
-| `src/api/`에 `main.py`, `utils.py`, `error_code.py` 파일 생성 | 시스템 예약 파일명과 충돌해 빌드 실패 |
-| `user-values.yaml` 위치·이름 변경, `model.*` 블록 수정 | 빌드 또는 배포·추론 실패 |
-| `copy_folder_list`에 `/home/jovyan` 밖의 경로 사용 | 빌드 즉시 실패 |
-| `requirements.txt` 상단의 시스템 라이브러리 삭제 | 추론 서버 기동 실패 |
+Open another terminal:
+
+```bash
+cd src/core/frontend
+npm install
+npm run dev
+```
+
+Open http://localhost:5174 and sign in with the demo account: `admin@test.com` / `1234`.
+
+## The AI models
+
+All trained models are in the `work/` folder:
+
+| File | Camera | Model | Notes |
+|---|---|---|---|
+| `work/mono_result/mono_yolo11n.pt` | MONO | YOLO11n | **The one the live system uses.** It has 9 classes, including foreign-material subtypes. |
+| `work/mono6_result/mono6_yolo11m.pt` | MONO | YOLO11m | More accurate, but it has only 6 classes (no foreign-material subtypes) |
+| `work/rtdetr_result/rtdetr_mono6.pt` | MONO | RT-DETR | Comparison model, 6 classes |
+| `work/color_result/color_yolo11n.pt` | COLOR | YOLO11n | Light and fast |
+| `work/color_result/color_yolo11m.pt` | COLOR | YOLO11m | Recommended COLOR model |
+| `work/color_result/color_rtdetr-l.pt` | COLOR | RT-DETR-L | Comparison model |
+
+Each folder has its own `README.md` with training details, scores, and sample code. Those READMEs are in Korean.
+
+The COLOR training scripts (training, evaluation, and tuning) are in `work/color/`.
+
+## Good to know
+
+- **Not included:** the 1.4 GB test image set (`backend_test_set.tar`). It is too big for GitHub, and you do not need it to run the app.
+- **Known limit of the COLOR models:** in the training data, normal eggs and defective eggs were mostly photographed in different sessions. Because of this, the models partly learned to tell the *photo sessions* apart, not only the defects. Real-world accuracy may be lower than the test scores show. See `work/color_result/README.md` for the full analysis.
+- **Platform build:** this project was first built on an internal ML platform with a GitLab CI pipeline. That build guide (in Korean) is in [`docs/platform-build-guide.ko.md`](docs/platform-build-guide.ko.md). You only need it if you deploy on that platform.
+
+## Folder map
+
+```
+.
+├── src/
+│   ├── api/              # Container build settings for the ML platform
+│   └── core/
+│       ├── ai_server/    # Model server (MONO / COLOR)
+│       ├── backend/      # FastAPI + PostgreSQL API
+│       ├── frontend/     # React dashboard
+│       └── color_infer.py, predict_module.py, ...
+├── work/                 # Trained models, training scripts, and model notes
+└── docs/                 # Platform build guide (Korean)
+```
+
+---
+
+Thanks for stopping by! 🥚 Questions and ideas are welcome. Please open an issue.
